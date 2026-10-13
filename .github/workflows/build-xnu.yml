@@ -1,0 +1,54 @@
+name: build-xnu
+
+# XNU only builds with Apple's toolchain, so it must run on macOS.
+# This workflow produces real kernel binaries without needing a local Mac.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+env:
+  # Bypass kernel-version derivation from the SDK/KDK's System.kext.
+  # Set RC_DARWIN_KERNEL_VERSION to an empty string to derive it instead.
+  RC_DARWIN_KERNEL_VERSION: "11215.0.0"
+
+jobs:
+  build:
+    name: ${{ matrix.arch }} (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13   # Intel
+            arch: X86_64
+          - runner: macos-14   # Apple Silicon
+            arch: ARM64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun -sdk macosx -show-sdk-path
+          uname -m
+          ls /Library/Developer/KDKs 2>/dev/null || echo "no KDK installed"
+
+      - name: Build XNU (${{ matrix.arch }} RELEASE)
+        run: |
+          make SDKROOT=macosx \
+               ARCH_CONFIGS=${{ matrix.arch }} \
+               KERNEL_CONFIGS=RELEASE \
+               MAKEJOBS="-j$(sysctl -n hw.ncpu)" \
+               all
+
+      - name: List artifacts
+        run: find BUILD -type f -name 'kernel.*' -print
+
+      - name: Upload kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: xnu-${{ matrix.arch }}-RELEASE
+          path: BUILD/obj/**/kernel.*
+          if-no-files-found: error
