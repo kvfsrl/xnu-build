@@ -40,7 +40,15 @@ jobs:
 
       - name: Install build prerequisites
         run: |
-          brew install jq gum xcodes bash cmake ninja
+          # The recipe's install_deps() insists on `gum` and `xcodes`; we don't
+          # use them (Xcode is preinstalled and MACOS_VERSION is set), so stub
+          # them out instead of fighting brew's missing xcodes bottle.
+          mkdir -p "$RUNNER_TEMP/ci-bin"
+          printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/ci-bin/gum"
+          printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/ci-bin/xcodes"
+          chmod +x "$RUNNER_TEMP/ci-bin/gum" "$RUNNER_TEMP/ci-bin/xcodes"
+          echo "$RUNNER_TEMP/ci-bin" >> "$GITHUB_PATH"
+          command -v jq cmake ninja || brew install jq cmake ninja
 
       - name: Fetch proven XNU build recipe
         run: git clone --depth 1 https://github.com/blacktop/darwin-xnu-build.git "$RUNNER_TEMP/xnu-build"
