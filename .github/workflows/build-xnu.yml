@@ -1,54 +1,64 @@
 name: build-xnu
 
-# XNU only builds with Apple's toolchain, so it must run on macOS.
-# This workflow produces real kernel binaries without needing a local Mac.
+# Builds Apple's XNU (Darwin) kernel on a macOS runner.
+#
+# Why this doesn't call `make` directly: the OSS XNU build needs the Kernel
+# Development Kit (KDK) plus several Apple OSS subprojects to be built first
+# (AvailabilityVersions -> availability.pl, bootstrap_cmds -> mig, Libsystem/
+# libplatform headers, dtrace -> ctfconvert). blacktop/darwin-xnu-build
+# maintains a working recipe + version-specific patches for all of this.
+# This workflow installs the KDK (publicly mirrored by Dortania) and runs it.
 
 on:
   workflow_dispatch:
+    inputs:
+      macos_version:
+        description: "macOS release to build XNU for (must match runner's SDK)"
+        required: true
+        default: "14.5"
   push:
     branches: [ main ]
 
-env:
-  # Bypass kernel-version derivation from the SDK/KDK's System.kext.
-  # Set RC_DARWIN_KERNEL_VERSION to an empty string to derive it instead.
-  RC_DARWIN_KERNEL_VERSION: "11215.0.0"
-
 jobs:
   build:
-    name: ${{ matrix.arch }} (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-13   # Intel
-            arch: X86_64
-          - runner: macos-14   # Apple Silicon
-            arch: ARM64
+    name: XNU ${{ github.event.inputs.macos_version || '14.5' }} (AVMAPPLE/VMAPPLE)
+    runs-on: macos-14
+    timeout-minutes: 240
+    env:
+      MACOS_VERSION: ${{ github.event.inputs.macos_version || '14.5' }}
+      KERNEL_CONFIG: RELEASE
+      ARCH_CONFIG: ARM64
+      MACHINE_CONFIG: VMAPPLE
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show toolchain
+      - name: Toolchain
         run: |
           xcodebuild -version
           xcrun -sdk macosx -show-sdk-path
-          uname -m
-          ls /Library/Developer/KDKs 2>/dev/null || echo "no KDK installed"
+          sw_vers
 
-      - name: Build XNU (${{ matrix.arch }} RELEASE)
+      - name: Install build prerequisites
         run: |
-          make SDKROOT=macosx \
-               ARCH_CONFIGS=${{ matrix.arch }} \
-               KERNEL_CONFIGS=RELEASE \
-               MAKEJOBS="-j$(sysctl -n hw.ncpu)" \
-               all
+          brew install jq gum xcodes bash cmake ninja
 
-      - name: List artifacts
-        run: find BUILD -type f -name 'kernel.*' -print
+      - name: Fetch proven XNU build recipe
+        run: git clone --depth 1 https://github.com/blacktop/darwin-xnu-build.git "$RUNNER_TEMP/xnu-build"
+
+      - name: Build XNU (installs matching KDK, builds prerequisites, compiles kernel)
+        working-directory: ${{ runner.temp }}/xnu-build
+        run: bash -x ./build.sh
+
+      - name: List kernel artifacts
+        run: |
+          find "$RUNNER_TEMP/xnu-build/fakeroot/System/Library/Kernels" -type f -print
+          find "$RUNNER_TEMP/xnu-build/build" -name 'kernel.*' -print
 
       - name: Upload kernel
         uses: actions/upload-artifact@v4
         with:
-          name: xnu-${{ matrix.arch }}-RELEASE
-          path: BUILD/obj/**/kernel.*
+          name: xnu-${{ env.MACOS_VERSION }}-${{ env.MACHINE_CONFIG }}-${{ env.KERNEL_CONFIG }}
+          path: |
+            ${{ runner.temp }}/xnu-build/fakeroot/System/Library/Kernels/
+            ${{ runner.temp }}/xnu-build/build/xnu.obj/kernel.*
           if-no-files-found: error
